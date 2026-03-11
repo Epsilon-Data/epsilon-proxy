@@ -58,8 +58,9 @@ func (r *Registrar) Register(ctx context.Context, token string) error {
 	// 2. Test DB connection
 	fmt.Print("Testing database connection... ")
 
-	// Respect sslmode if already in URL, otherwise default to "prefer"
-	sslMode := "prefer"
+	// Respect sslmode if already in URL, otherwise don't append one
+	// (lib/pq only supports: disable, require, verify-full, verify-ca)
+	sslMode := ""
 	if strings.Contains(dbURL, "sslmode=") {
 		sslMode = "" // don't override — already in URL
 	}
