@@ -59,7 +59,7 @@ Alternatively, set the EPSILON_DB_URL environment variable.`,
 				apiURL = "https://app.epsilon-data.org/api/v1/hub"
 			}
 
-			reg := registration.New(apiURL)
+			reg := registration.New(apiURL, Version)
 			return reg.Register(cmd.Context(), token)
 		},
 	}
@@ -94,6 +94,8 @@ func startCmd() *cobra.Command {
 				fmt.Println("  epsilon-proxy register --token <YOUR_TOKEN>")
 				return fmt.Errorf("incomplete config")
 			}
+
+			cfg.Version = Version
 
 			// Write PID file so register/stop can find us
 			config.WritePid()
@@ -166,6 +168,7 @@ Requires EPSILON_DB_URL env var or --db-url flag (dev mode only).`,
 				DatasetID:   "dev-dataset",
 				PlatformURL: "http://localhost",
 				ProxyToken:  "dev-token",
+				Version:     Version,
 				DevMode:     true,
 				Database: config.DatabaseConfig{
 					URL:            dbURL,

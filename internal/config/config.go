@@ -14,6 +14,7 @@ type Config struct {
 	DatasetID   string            `yaml:"dataset_id"`
 	PlatformURL string            `yaml:"platform_url"`
 	ProxyToken  string            `yaml:"proxy_token"`
+	Version     string            `yaml:"-"` // set at runtime via ldflags, not persisted
 	DevMode     bool              `yaml:"dev_mode"`
 	Rathole     RatholeConfig     `yaml:"rathole"`
 	Database    DatabaseConfig    `yaml:"database"`

@@ -20,6 +20,7 @@ import (
 
 type Registrar struct {
 	apiURL     string
+	version    string
 	httpClient *http.Client
 }
 
@@ -39,9 +40,10 @@ type registerResponse struct {
 	AssignedPort   int    `json:"assignedPort"`
 }
 
-func New(apiURL string) *Registrar {
+func New(apiURL, version string) *Registrar {
 	return &Registrar{
-		apiURL: strings.TrimRight(apiURL, "/"),
+		apiURL:  strings.TrimRight(apiURL, "/"),
+		version: version,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -103,7 +105,7 @@ func (r *Registrar) Register(ctx context.Context, token string) error {
 
 	reqBody := registerRequest{
 		InstallToken: token,
-		Version:      "0.1.0",
+		Version:      r.version,
 		DBType:       "postgres",
 	}
 
