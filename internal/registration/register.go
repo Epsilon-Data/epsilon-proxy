@@ -56,27 +56,43 @@ func (r *Registrar) Register(ctx context.Context, token string) error {
 	}
 
 	// 2. Test DB connection
-	fmt.Print("Testing database connection... ")
-
-	// Respect sslmode if already in URL, otherwise don't append one
-	// (lib/pq only supports: disable, require, verify-full, verify-ca)
-	sslMode := ""
-	if strings.Contains(dbURL, "sslmode=") {
-		sslMode = "" // don't override — already in URL
+	// If URL doesn't specify sslmode, try with SSL first, fall back to without
+	if !strings.Contains(dbURL, "sslmode=") {
+		fmt.Print("Testing database connection (SSL)... ")
+		sslCfg := config.DatabaseConfig{
+			URL: dbURL, SSLMode: "require", MaxConnections: 1, QueryTimeoutS: 10,
+		}
+		if err := db.New(sslCfg).Ping(ctx); err != nil {
+			fmt.Println("not available")
+			fmt.Print("Testing database connection (no SSL)... ")
+			noSSLCfg := config.DatabaseConfig{
+				URL: dbURL, SSLMode: "disable", MaxConnections: 1, QueryTimeoutS: 10,
+			}
+			if err := db.New(noSSLCfg).Ping(ctx); err != nil {
+				fmt.Println("FAILED")
+				return fmt.Errorf("database connection failed: %w", err)
+			}
+			// Append sslmode=disable to URL so config is saved correctly
+			sep := "?"
+			if strings.Contains(dbURL, "?") {
+				sep = "&"
+			}
+			dbURL += sep + "sslmode=disable"
+			fmt.Println("OK (SSL disabled)")
+		} else {
+			fmt.Println("OK")
+		}
+	} else {
+		fmt.Print("Testing database connection... ")
+		dbCfg := config.DatabaseConfig{
+			URL: dbURL, SSLMode: "", MaxConnections: 1, QueryTimeoutS: 10,
+		}
+		if err := db.New(dbCfg).Ping(ctx); err != nil {
+			fmt.Println("FAILED")
+			return fmt.Errorf("database connection failed: %w", err)
+		}
+		fmt.Println("OK")
 	}
-	dbCfg := config.DatabaseConfig{
-		URL:            dbURL,
-		SSLMode:        sslMode,
-		MaxConnections: 1,
-		QueryTimeoutS:  10,
-	}
-
-	dbClient := db.New(dbCfg)
-	if err := dbClient.Ping(ctx); err != nil {
-		fmt.Println("FAILED")
-		return fmt.Errorf("database connection failed: %w", err)
-	}
-	fmt.Println("OK")
 
 	// 3. Register with platform API (only sends token + version, NOT credentials)
 	fmt.Print("Registering with Epsilon platform... ")
@@ -123,7 +139,11 @@ func (r *Registrar) Register(ctx context.Context, token string) error {
 			ServiceName:     regResp.ServiceName,
 			RemotePublicKey: regResp.NoisePublicKey,
 		},
-		Database: dbCfg,
+		Database: config.DatabaseConfig{
+			URL:            dbURL,
+			MaxConnections: 5,
+			QueryTimeoutS:  120,
+		},
 		Server: config.ServerConfig{
 			ListenAddr: "127.0.0.1:8443",
 		},
