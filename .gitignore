@@ -1,0 +1,10 @@
+bin/
+dist/
+*.exe
+*.test
+*.out
+.env
+
+.idea/
+/proxy
+scripts/test-vectors.json
