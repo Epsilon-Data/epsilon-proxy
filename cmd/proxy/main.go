@@ -56,7 +56,7 @@ Alternatively, set the EPSILON_DB_URL environment variable.`,
 				return fmt.Errorf("--token is required")
 			}
 			if apiURL == "" {
-				return fmt.Errorf("--api-url is required")
+				apiURL = "https://app.epsilon-data.org/api/v1/hub"
 			}
 
 			reg := registration.New(apiURL)
@@ -79,8 +79,25 @@ func startCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(configPath)
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
+				fmt.Println("Proxy is not registered yet.")
+				fmt.Println()
+				fmt.Println("Run this first:")
+				fmt.Println("  epsilon-proxy register --token <YOUR_TOKEN>")
+				fmt.Println()
+				fmt.Println("Get your token from the Epsilon platform (Settings → Proxy).")
+				return fmt.Errorf("not registered")
 			}
+
+			if cfg.ProxyToken == "" {
+				fmt.Println("Proxy config is incomplete — missing proxy token.")
+				fmt.Println("Please re-register:")
+				fmt.Println("  epsilon-proxy register --token <YOUR_TOKEN>")
+				return fmt.Errorf("incomplete config")
+			}
+
+			// Write PID file so register/stop can find us
+			config.WritePid()
+			defer config.RemovePid()
 
 			// Set up signal-aware context for graceful shutdown
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -56,6 +56,24 @@ func DefaultPath() string {
 	return filepath.Join(home, ".epsilon-proxy", "config.yaml")
 }
 
+func PidPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".epsilon-proxy", "proxy.pid")
+}
+
+func WritePid() error {
+	path := PidPath()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(fmt.Sprintf("%d", os.Getpid())), 0600)
+}
+
+func RemovePid() {
+	os.Remove(PidPath())
+}
+
 func Load(path string) (*Config, error) {
 	if path == "" {
 		path = DefaultPath()

@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Epsilon-Data/epsilon-proxy/internal/config"
+	"github.com/Epsilon-Data/epsilon-proxy/internal/crawler"
 	"github.com/Epsilon-Data/epsilon-proxy/internal/db"
 )
 
@@ -26,6 +29,10 @@ type heartbeatRequest struct {
 	UptimeSeconds     int64  `json:"uptimeSeconds,omitempty"`
 }
 
+type heartbeatResponse struct {
+	Action string `json:"action,omitempty"`
+}
+
 type offlineRequest struct {
 	ProxyToken string `json:"proxyToken"`
 }
@@ -39,6 +46,8 @@ type Service struct {
 	startedAt  time.Time
 	cancel     context.CancelFunc
 	done       chan struct{}
+	crawling  sync.Mutex
+	beatCount int
 }
 
 func New(cfg *config.Config, dbClient *db.Client, version string) *Service {
@@ -77,7 +86,7 @@ func (s *Service) Start(ctx context.Context) {
 		}
 	}()
 
-	log.Printf("[heartbeat] Started (every %s)", DefaultInterval)
+	log.Printf("[heartbeat] Started (every %s) → %s", DefaultInterval, s.cfg.PlatformURL)
 }
 
 // Stop cancels the heartbeat loop.
@@ -120,9 +129,22 @@ func (s *Service) SendOffline(ctx context.Context) {
 
 func (s *Service) sendHeartbeat(ctx context.Context) {
 	dbReachable := false
+	var dbErr error
 	if s.dbClient != nil {
 		if err := s.dbClient.Ping(ctx); err == nil {
 			dbReachable = true
+		} else {
+			dbErr = err
+		}
+	}
+
+	// Log DB unreachable on first heartbeat and periodically (every 5 min = every 10th beat)
+	s.beatCount++
+	if !dbReachable && (s.beatCount == 1 || s.beatCount%10 == 0) {
+		if dbErr != nil {
+			log.Printf("[heartbeat] WARNING: Database unreachable: %v", dbErr)
+		} else {
+			log.Printf("[heartbeat] WARNING: No database client configured")
 		}
 	}
 
@@ -151,7 +173,53 @@ func (s *Service) sendHeartbeat(ctx context.Context) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		log.Printf("[heartbeat] Unexpected status: %d", resp.StatusCode)
+	if resp.StatusCode == http.StatusUnauthorized {
+		log.Println("[heartbeat] Proxy was unregistered from the platform.")
+		log.Println("[heartbeat] Cleaning up local config and shutting down...")
+		config.Remove()
+		if s.cancel != nil {
+			s.cancel()
+		}
+		return
 	}
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("[heartbeat] Unexpected status %d: %s", resp.StatusCode, string(respBody))
+		return
+	}
+
+	// Parse response for action commands
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil || len(respBody) == 0 {
+		return
+	}
+
+	var hbResp heartbeatResponse
+	if err := json.Unmarshal(respBody, &hbResp); err != nil {
+		return
+	}
+
+	if hbResp.Action == "crawl" {
+		s.handleCrawlAction(ctx)
+	}
+}
+
+func (s *Service) handleCrawlAction(ctx context.Context) {
+	// Prevent concurrent crawls
+	if !s.crawling.TryLock() {
+		return
+	}
+
+	go func() {
+		defer s.crawling.Unlock()
+		log.Println("[heartbeat] Received crawl action from platform")
+
+		if err := crawler.Run(ctx, s.cfg); err != nil {
+			log.Printf("[heartbeat] Crawl failed: %v", err)
+			return
+		}
+
+		log.Println("[heartbeat] Crawl completed and metadata uploaded")
+	}()
 }

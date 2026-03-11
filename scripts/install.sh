@@ -9,6 +9,7 @@ set -e
 
 PROXY_VERSION="${EPSILON_PROXY_VERSION:-latest}"
 RATHOLE_VERSION="${RATHOLE_VERSION:-0.5.0}"
+TBLS_VERSION="${TBLS_VERSION:-1.76.0}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 GITHUB_REPO="Epsilon-Data/epsilon-proxy"
@@ -194,6 +195,50 @@ install_rathole() {
     info "rathole installed: v${RATHOLE_VERSION}"
 }
 
+# Install tbls (database schema crawler)
+install_tbls() {
+    printf "\nInstalling tbls v%s...\n" "$TBLS_VERSION"
+
+    if command -v tbls >/dev/null 2>&1; then
+        EXISTING_VERSION=$(tbls version 2>/dev/null | head -1 || echo "unknown")
+        info "tbls already installed: $EXISTING_VERSION (skipping)"
+        return
+    fi
+
+    # tbls uses different archive naming
+    case "${OS}_${ARCH}" in
+        linux_amd64)   TBLS_ASSET="tbls_v${TBLS_VERSION}_linux_amd64.tar.gz" ;;
+        linux_arm64)   TBLS_ASSET="tbls_v${TBLS_VERSION}_linux_arm64.tar.gz" ;;
+        darwin_amd64)  TBLS_ASSET="tbls_v${TBLS_VERSION}_darwin_amd64.tar.gz" ;;
+        darwin_arm64)  TBLS_ASSET="tbls_v${TBLS_VERSION}_darwin_arm64.tar.gz" ;;
+    esac
+
+    TBLS_URL="https://github.com/k1LoW/tbls/releases/download/v${TBLS_VERSION}/${TBLS_ASSET}"
+
+    TMP_DIR="$(mktemp -d)"
+
+    printf "  Downloading... "
+    if curl -fsSL "$TBLS_URL" -o "${TMP_DIR}/tbls.tar.gz" 2>/dev/null; then
+        printf "OK\n"
+    else
+        printf "FAILED\n"
+        warn "Could not download tbls. You can install it manually."
+        warn "Download from: https://github.com/k1LoW/tbls/releases"
+        return
+    fi
+
+    printf "  Extracting... "
+    tar -xzf "${TMP_DIR}/tbls.tar.gz" -C "$TMP_DIR"
+    printf "OK\n"
+
+    printf "  Installing to %s... " "$INSTALL_DIR"
+    $SUDO install -m 755 "${TMP_DIR}/tbls" "${INSTALL_DIR}/tbls"
+    printf "OK\n"
+
+    rm -rf "$TMP_DIR"
+    info "tbls installed: v${TBLS_VERSION}"
+}
+
 # Print next steps
 print_next_steps() {
     printf "\n"
@@ -231,6 +276,7 @@ main() {
     check_permissions
     install_proxy
     install_rathole
+    install_tbls
     print_next_steps
 }
 

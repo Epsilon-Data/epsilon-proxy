@@ -49,6 +49,10 @@ func New(apiURL string) *Registrar {
 }
 
 func (r *Registrar) Register(ctx context.Context, token string) error {
+	// 0. Stop any running proxy and clean old config
+	stopRunningProxy()
+	config.Remove()
+
 	// 1. Get DB credentials — env var or interactive prompt
 	dbURL, err := getDBURL()
 	if err != nil {
@@ -161,6 +165,39 @@ func (r *Registrar) Register(ctx context.Context, token string) error {
 	fmt.Println("Run 'epsilon-proxy start' to connect.")
 
 	return nil
+}
+
+// stopRunningProxy checks for a running proxy via PID file and stops it.
+func stopRunningProxy() {
+	pidFile := config.PidPath()
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return // no PID file — nothing running
+	}
+
+	pid := strings.TrimSpace(string(data))
+	if pid == "" {
+		return
+	}
+
+	var pidNum int
+	if _, err := fmt.Sscanf(pid, "%d", &pidNum); err != nil {
+		return
+	}
+
+	proc, err := os.FindProcess(pidNum)
+	if err != nil {
+		return
+	}
+
+	// Send SIGTERM for graceful shutdown
+	if err := proc.Signal(os.Interrupt); err == nil {
+		fmt.Printf("Stopped running proxy (PID %d)\n", pidNum)
+		// Give it a moment to shut down
+		time.Sleep(1 * time.Second)
+	}
+
+	os.Remove(pidFile)
 }
 
 // getDBURL reads the database URL from EPSILON_DB_URL env var,
