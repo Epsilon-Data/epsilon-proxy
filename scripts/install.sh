@@ -91,20 +91,54 @@ install_proxy() {
     printf "\nInstalling epsilon-proxy...\n"
 
     if [ "$PROXY_VERSION" = "latest" ]; then
-        DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/epsilon-proxy_${OS}_${ARCH}.tar.gz"
-    else
-        DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/v${PROXY_VERSION}/epsilon-proxy_${PROXY_VERSION}_${OS}_${ARCH}.tar.gz"
+        printf "  Resolving latest version... "
+        PROXY_VERSION=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
+            ${GITHUB_TOKEN:+-H "Authorization: token $GITHUB_TOKEN"} \
+            | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/')
+        if [ -z "$PROXY_VERSION" ]; then
+            error "Could not resolve latest version. Set EPSILON_PROXY_VERSION or GITHUB_TOKEN for private repos."
+        fi
+        printf "%s\n" "$PROXY_VERSION"
     fi
+
+    ASSET_NAME="epsilon-proxy_${PROXY_VERSION}_${OS}_${ARCH}.tar.gz"
 
     TMP_DIR="$(mktemp -d)"
     trap 'rm -rf "$TMP_DIR"' EXIT
 
-    printf "  Downloading from GitHub... "
-    if curl -fsSL "$DOWNLOAD_URL" -o "${TMP_DIR}/epsilon-proxy.tar.gz" 2>/dev/null; then
+    printf "  Downloading %s... " "$ASSET_NAME"
+
+    # Try direct download first (works for public repos)
+    DIRECT_URL="https://github.com/${GITHUB_REPO}/releases/download/v${PROXY_VERSION}/${ASSET_NAME}"
+    if curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: token $GITHUB_TOKEN"} \
+        "$DIRECT_URL" -o "${TMP_DIR}/epsilon-proxy.tar.gz" 2>/dev/null; then
         printf "OK\n"
+    elif [ -n "$GITHUB_TOKEN" ]; then
+        # Private repo: resolve asset ID via API, then download
+        ASSET_ID=$(curl -fsSL \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${PROXY_VERSION}" \
+            | grep -B3 "\"name\": \"${ASSET_NAME}\"" | grep '"id"' | head -1 | sed 's/[^0-9]//g')
+
+        if [ -z "$ASSET_ID" ]; then
+            printf "FAILED\n"
+            error "Asset not found: ${ASSET_NAME}"
+        fi
+
+        if curl -fsSL \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}" \
+            -o "${TMP_DIR}/epsilon-proxy.tar.gz" 2>/dev/null; then
+            printf "OK\n"
+        else
+            printf "FAILED\n"
+            error "Download failed for asset ID ${ASSET_ID}"
+        fi
     else
         printf "FAILED\n"
-        error "Download failed. Check if release exists at: $DOWNLOAD_URL"
+        error "Download failed. For private repos, set GITHUB_TOKEN env var."
     fi
 
     printf "  Extracting... "
