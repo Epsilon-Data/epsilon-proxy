@@ -57,9 +57,15 @@ func (r *Registrar) Register(ctx context.Context, token string) error {
 
 	// 2. Test DB connection
 	fmt.Print("Testing database connection... ")
+
+	// Respect sslmode if already in URL, otherwise default to "prefer"
+	sslMode := "prefer"
+	if strings.Contains(dbURL, "sslmode=") {
+		sslMode = "" // don't override — already in URL
+	}
 	dbCfg := config.DatabaseConfig{
 		URL:            dbURL,
-		SSLMode:        "require",
+		SSLMode:        sslMode,
 		MaxConnections: 1,
 		QueryTimeoutS:  10,
 	}
