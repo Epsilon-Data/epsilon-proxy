@@ -186,7 +186,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	resp := HealthResponse{
 		Status:            "healthy",
-		Version:           "0.1.0",
+		Version:           s.cfg.Version,
 		TunnelConnected:   true, // TODO: check rathole subprocess
 		DatabaseReachable: dbReachable,
 		UptimeSeconds:     int64(time.Since(startTime).Seconds()),

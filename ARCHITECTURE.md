@@ -23,16 +23,25 @@ Data Owner's Network                          Epsilon Infrastructure
 │  │  ├─ attestation verifier  │  │          │  │                                       │
 │  │  ├─ DB connector          │  │          │  │  EC2#B (on-demand)                    │
 │  │  ├─ hybrid encryptor      │  │          │  │  ┌─────────────────┐                  │
-│  │  └─ HMAC auth             │  │          │  │  │ Coordinator     │                  │
-│  └───────────────────────────┘  │          │  └──► POST /query     │                  │
-│                                │           │     │ via :10000      │                  │
-│  Config (local only):          │           │     └────────┬────────┘                  │
-│  - db credentials              │           │              │ vsock :5005               │
-│  - proxy_token                 │           │     ┌────────┴────────┐                  │
-│  - noise public key            │           │     │ Enclave         │                  │
-│                                │           │     │ (decrypts +     │                  │
-│  No inbound ports needed.      │           │     │  executes)      │                  │
-└────────────────────────────────┘           │     └─────────────────┘                  │
+│  │  ├─ HMAC auth             │  │          │  │  │ Coordinator     │                  │
+│  │  ├─ schema crawler        │  │          │  └──► POST /query     │                  │
+│  │  └─ heartbeat client      │  │          │     │ via :10000      │                  │
+│  └───────────────────────────┘  │          │     └────────┬────────┘                  │
+│                                │           │              │ vsock :5005               │
+│  Config (local only):          │           │     ┌────────┴────────┐                  │
+│  - db credentials              │           │     │ Enclave         │                  │
+│  - proxy_token                 │           │     │ (decrypts +     │                  │
+│  - noise public key            │           │     │  executes)      │                  │
+│                                │           │     └─────────────────┘                  │
+│  No inbound ports needed.      │           │                                          │
+└────────────────────────────────┘           │  Platform API (always on)                │
+                                             │  ┌─────────────────────┐                 │
+                                             │  │ NestJS API          │                 │
+                                             │  │ - proxy/register    │                 │
+                                             │  │ - proxy/heartbeat   │                 │
+                                             │  │ - proxy/metadata    │                 │
+                                             │  │ - proxy/offline     │                 │
+                                             │  └─────────────────────┘                 │
                                              └──────────────────────────────────────────┘
 ```
 
@@ -72,15 +81,71 @@ Coordinator          Middleware         Proxy (via rathole)      Enclave
     │◄──────────────── { output, attestation } ─────────────────────│
 ```
 
+## Data Flow — Registration & Auto-Crawl
+
+```
+Data Owner                Platform API                Proxy (heartbeat loop)
+─────────                 ────────────                ──────────────────────
+1. Create project
+   (connectionType=PROXY)
+   status → PENDING
+
+2. Generate install token
+   (Settings → Proxy)
+
+3. epsilon-proxy register
+   --token <token>
+        ─────────────→  4. Validate token
+                            Assign port
+                            Generate keys
+                      ←──  5. Return config
+                            (proxyToken, ratholeToken,
+                             serverAddr, serviceName)
+
+6. Save config locally
+   Prompt DB credentials
+   Test DB connection
+   (credentials NEVER sent)
+
+7. epsilon-proxy start
+   → tunnel connects
+   → heartbeat starts (30s)
+
+                                              8. POST /heartbeat
+                                                 { proxyToken,
+                                                   databaseReachable: true }
+                         9. Project PENDING     ←─
+                            + DB reachable
+                            → respond: action=crawl
+                                              →  10. Crawl schema locally
+                                                     (tables, columns, ERD)
+                                              11. POST /metadata
+                                                  { schema, erd }
+                         12. Queue data-broker  ←─
+                             (LOAD_ONLY mode)
+                             status → CRAWLING
+
+                         13. Data-broker loads
+                             metadata into Atlas
+                             status → READY
+
+                         ─── If ERROR ───────────
+
+User clicks "Retry"     14. Reset to PENDING
+                                              15. Next heartbeat gets
+                                                  action=crawl → re-crawl
+```
+
 ## What Each Component Sees
 
-| Component | Sees SQL? | Sees Raw Data? | Sees Credentials? | Sees Ciphertext? |
-|-----------|-----------|----------------|-------------------|-----------------|
-| Middleware | Yes | No | No | No |
-| Coordinator | Yes | No | No | Yes (passes through) |
-| rathole tunnel | No | No | No | Yes (encrypted bytes) |
-| Proxy | Yes | Yes (encrypts immediately) | Yes (local only) | Yes (produces it) |
-| Enclave | Yes | Yes (decrypts) | No | Yes (receives it) |
+| Component | Sees SQL? | Sees Raw Data? | Sees Credentials? | Sees Schema? | Sees Ciphertext? |
+|-----------|-----------|----------------|-------------------|-------------|-----------------|
+| Platform API | No | No | No | Yes (metadata) | No |
+| Middleware | Yes | No | No | No | No |
+| Coordinator | Yes | No | No | No | Yes (passes through) |
+| rathole tunnel | No | No | No | No | Yes (encrypted bytes) |
+| Proxy | Yes | Yes (encrypts immediately) | Yes (local only) | Yes (crawls it) | Yes (produces it) |
+| Enclave | Yes | Yes (decrypts) | No | No | Yes (receives it) |
 
 ## Security Layers
 
@@ -209,6 +274,7 @@ Only the enclave has the private key to decrypt. Cross-language compatible (Go e
 | Platform can't read data | Proxy encrypts with enclave's public key before data leaves data owner's network |
 | Coordinator can't read data | Only passes ciphertext, doesn't have private key |
 | Credentials stay local | Stored in proxy config, never sent to platform |
+| Schema metadata only | Crawl uploads table/column names + ERD — never raw data |
 | MITM protection | Proxy verifies Nitro attestation before trusting public key |
 | Replay protection | HMAC + timestamp window (300s) |
 | Tunnel encryption | Noise protocol (ChaCha20-Poly1305 + X25519) |
@@ -221,7 +287,9 @@ Only the enclave has the private key to decrypt. Cross-language compatible (Go e
 
 ## API Endpoints
 
-### POST /query
+### Proxy-local endpoints (127.0.0.1:8443)
+
+#### POST /query
 
 Request:
 ```json
@@ -260,22 +328,31 @@ Response (error):
 }
 ```
 
-### GET /health
+#### GET /health
 
 ```json
 {
   "status": "healthy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "tunnel_connected": true,
   "database_reachable": true,
   "uptime_seconds": 84210
 }
 ```
 
+### Platform API endpoints (called by proxy)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/proxy/register` | POST | Register proxy with install token, receive config |
+| `/proxy/heartbeat` | POST | Send heartbeat, receive action (`crawl` or none) |
+| `/proxy/metadata` | POST | Upload crawled schema metadata |
+| `/proxy/offline` | POST | Notify platform of graceful shutdown |
+
 ## Registration Flow
 
 ```
-$ epsilon-proxy register --token ept_a1b2c3d4 --api-url https://app.epsilon-data.org/api/v1/hub
+$ epsilon-proxy register --token ept_a1b2c3d4
 
 Database credentials (stored locally only, never sent to Epsilon)
 ─────────────────────────────────────────────────────────────────
@@ -290,9 +367,9 @@ Port [5432]: 5432
 Database name: clinical_data
 Username: admin
 Password: ********
-SSL mode [require]: disable
+SSL mode [require]:
 
-Testing database connection... OK
+Testing database connection (SSL)... OK
 Registering with Epsilon platform... OK
 
 Proxy ID:     px_a1b2c3d4
@@ -302,110 +379,24 @@ Credentials stored LOCALLY ONLY — they never leave this machine.
 Run 'epsilon-proxy start' to connect.
 ```
 
-## Config File (~/.epsilon-proxy/config.yaml)
+## Implementation Status
 
-```yaml
-proxy_id: "px_a1b2c3d4"
-dataset_id: "2a45cf39-85f5-4949-a6fd-0f85d334dc05"
-platform_url: "https://app.epsilon-data.org"
-proxy_token: "ept_xxxxxxxxxxxx"
-rathole:
-  server_addr: "relay.epsilon-data.org:7000"
-  token: "rt_xxxxxxxxxxxx"
-  service_name: "proxy-px_a1b2c3d4"
-  remote_public_key: "xrpknQcAagcd/b9foMwxSCD+..."
-database:
-  url: "postgres://user:pass@localhost:5432/mydb"
-  ssl_mode: "require"
-  max_connections: 5
-  query_timeout_s: 120
-server:
-  listen_addr: "127.0.0.1:8443"
-attestation:
-  expected_pcr0: "hex_encoded_48_bytes..."
-```
-
-## Production Flow (Automated)
-
-```
-Data Owner                      Platform API                    EC2#A (Rathole)
-─────────                       ────────────                    ───────────────
-1. Install proxy
-   curl | sh
-
-2. epsilon-proxy register
-   --token <from UI>
-        ──────────────────→  3. Validate token
-                                Generate unique:
-                                - proxy_id
-                                - rathole_token
-                                - noise keypair
-                                - port assignment
-                             4. Update rathole
-                                server.toml (add service)
-                                  ──────────────────────→  5. Hot-reload config
-                                                              (rathole watches file)
-                          ←──  6. Return to proxy:
-                                - rathole_token
-                                - noise_public_key
-                                - server_addr
-                                - service_name
-
-7. Proxy saves config locally
-   Prompts for DB credentials
-   (never sent to platform)
-
-8. epsilon-proxy start
-   → tunnel connects automatically
-   → heartbeat starts
-                                                           9. Coordinator can now
-                                                              reach proxy via tunnel
-
-Port allocation (auto-assigned):
-  proxy-001 → :10000
-  proxy-002 → :10001
-  proxy-003 → :10002
-  ...
-```
-
-## Verified E2E Test Results
-
-Tested 2026-03-10: MacBook (proxy + Postgres) ↔ rathole tunnel ↔ EC2#A (Sydney):
-
-```
-EC2#A $ python3 e2e-tunnel-test.py
-1. Generating RSA-2048 keypair... OK
-2. Health check via tunnel... OK
-3. Sending query: SELECT * FROM patient LIMIT 5
-   OK - Rows: 5 | Cols: 6 | Encrypted: 896B
-4. Decrypting... OK
-
-=== Decrypted CSV ===
-patient_id,age,medications,admission_date,diagnosis,critical
-1,67,"{Lisinopril,Atorvastatin}",2024-01-15T09:15:00Z,Hypertension,false
-...
-
-=== EC2 → TUNNEL → MacBook E2E PASSED ===
-```
-
-Flow verified: EC2#A:10000 → rathole tunnel → MacBook:8443 → proxy → Postgres → encrypt → ciphertext back through tunnel → EC2#A decrypts with private key.
-
-## Implementation Phases
-
-| Phase | Component | Status |
-|-------|-----------|--------|
-| 0 | rathole infra (EC2#A) | **Done** — systemd service running |
-| 2 | epsilon-proxy (Go binary) | **Done** — all core features |
-| — | Hybrid encryption (Go ↔ Python compatible) | **Done** — cross-language verified |
-| — | SQL query validation | **Done** — SELECT only, system tables blocked |
-| — | Noise protocol support | **Done** — config ready, needs key generation |
-| — | E2E tunnel test | **Done** — MacBook ↔ EC2#A verified |
-| 1 | Platform API (proxy register/heartbeat) | Not started |
-| 3 | Enclave (get_attestation_for_proxy) | Not started |
-| 4 | Middleware (mode=proxy) | Not started |
-| 5 | Coordinator (ProxyClient + flow) | Not started |
-| 6 | Frontend (Trust Center proxy UX) | Not started |
-| 7 | Heartbeat + online/offline detection | Not started |
+| Component | Status |
+|-----------|--------|
+| epsilon-proxy (Go binary) | **Done** — all core features |
+| Hybrid encryption (Go ↔ Python) | **Done** — cross-language verified |
+| SQL query validation | **Done** — SELECT only, system tables blocked |
+| Noise protocol tunnel | **Done** — rathole client with auto-reconnect |
+| E2E tunnel test | **Done** — MacBook ↔ EC2#A verified |
+| Platform API (register/heartbeat/metadata) | **Done** — proxy registration, heartbeat, metadata upload |
+| Heartbeat + online/offline detection | **Done** — 30s heartbeat, auto-offline after 90s |
+| Schema auto-crawl via heartbeat | **Done** — platform signals crawl, proxy executes |
+| Frontend (Trust Center proxy UX) | **Done** — proxy setup, status, retry in Settings |
+| AWS Nitro attestation | **Done** — COSE_Sign1 + PCR0 verification |
+| Versioning (ldflags + git tags) | **Done** — `git describe` based, SemVer |
+| Enclave integration (get_attestation_for_proxy) | Not started |
+| Middleware (mode=proxy) | Not started |
+| Coordinator (ProxyClient + flow) | Not started |
 
 ## Project Structure
 
@@ -413,7 +404,7 @@ Flow verified: EC2#A:10000 → rathole tunnel → MacBook:8443 → proxy → Pos
 epsilon-proxy/
 ├── cmd/proxy/main.go              # CLI (register, start, dev, status, unregister)
 ├── internal/
-│   ├── config/config.go           # YAML config management
+│   ├── config/config.go           # YAML config management + runtime version
 │   ├── crypto/
 │   │   ├── hybrid.go              # RSA-OAEP + AES-256-CBC encryption
 │   │   ├── hybrid_test.go         # Roundtrip + byte layout tests
@@ -424,11 +415,14 @@ epsilon-proxy/
 │   │   ├── postgres.go            # Read-only query execution, CSV output
 │   │   ├── validate.go            # SQL query validation + row limits
 │   │   └── validate_test.go       # Allowed/blocked query tests
+│   ├── crawler/                   # Schema crawling (tables, columns, ERD)
+│   ├── heartbeat/heartbeat.go     # 30s heartbeat loop + crawl action handler
 │   ├── server/server.go           # HTTP server (/query, /health)
 │   ├── tunnel/rathole.go          # rathole client subprocess + noise config
 │   └── registration/register.go   # Interactive registration + DB credential prompt
 ├── scripts/
 │   ├── install.sh                 # curl | sh installer
+│   ├── e2e-integration/main.go    # Integration test
 │   ├── e2e-test/main.go           # Direct e2e test
 │   ├── e2e-test-tunnel/main.go    # Tunnel e2e test
 │   ├── cross-language-test.py     # Go↔Python crypto verification
@@ -438,8 +432,7 @@ epsilon-proxy/
 │   ├── aws-rds.md                 # AWS RDS guide
 │   ├── neon-supabase.md           # Serverless DB guide
 │   └── gcp-azure.md              # GCP / Azure guide
-├── .github/workflows/release.yml  # CI: test + goreleaser
-├── .goreleaser.yaml               # Cross-platform binary releases
-├── Dockerfile                     # Multi-stage build with rathole
-└── Makefile                       # build, test, install targets
+├── CHANGELOG.md                   # Release history (SemVer)
+├── Makefile                       # build (git describe), test, install
+└── LICENSE                        # Apache 2.0
 ```

@@ -17,8 +17,9 @@ Your Network                              Epsilon Infrastructure
 │  │  - Attestation     │  │             │  decrypted inside the  │
 │  │  - Encryption      │  │             │  enclave. Platform     │
 │  │  - Tunnel client   │  │             │  operators cannot      │
-│  └────────────────────┘  │             │  access it.            │
-└──────────────────────────┘             └────────────────────────┘
+│  │  - Schema crawler  │  │             │  access it.            │
+│  └────────────────────┘  │             └────────────────────────┘
+└──────────────────────────┘
 ```
 
 **Key guarantees:**
@@ -27,6 +28,7 @@ Your Network                              Epsilon Infrastructure
 - Results encrypted with the enclave's RSA public key before leaving your machine
 - Enclave identity verified via AWS Nitro attestation (COSE_Sign1 + PCR0)
 - Tunnel encrypted with Noise protocol (X25519 + ChaCha20-Poly1305)
+- Schema metadata crawled locally and uploaded to the platform (no raw data)
 
 ## Installation
 
@@ -44,21 +46,21 @@ cd epsilon-proxy
 make build
 ```
 
-Requires Go 1.23+.
+Requires Go 1.23+. The binary version is set automatically from the latest git tag.
 
 ## Quick start
 
 ### 1. Register
 
-Get an install token from your Epsilon platform dashboard, then:
+Get an install token from your Epsilon platform dashboard (Settings → Proxy), then:
 
 ```bash
-epsilon-proxy register \
-  --token ept_your_token_here \
-  --api-url https://app.epsilon-data.org/api/v1/hub
+epsilon-proxy register --token ept_your_token_here
 ```
 
-You'll be prompted for database credentials. These are stored locally at `~/.epsilon-proxy/config.yaml` (mode 0600) and never transmitted.
+The API URL defaults to `https://app.epsilon-data.org/api/v1/hub`. For self-hosted deployments, override with `--api-url`.
+
+You'll be prompted for database credentials interactively. These are stored locally at `~/.epsilon-proxy/config.yaml` (mode 0600) and **never transmitted** to the platform.
 
 ### 2. Start
 
@@ -66,7 +68,13 @@ You'll be prompted for database credentials. These are stored locally at `~/.eps
 epsilon-proxy start
 ```
 
-The proxy connects to the platform via an encrypted reverse tunnel and begins sending heartbeats every 30 seconds. Press `Ctrl+C` for graceful shutdown (sends offline notification).
+The proxy:
+1. Connects to the platform via an encrypted reverse tunnel
+2. Sends heartbeats every 30 seconds (reports database reachability)
+3. Automatically crawls the database schema when the platform requests it
+4. Uploads schema metadata (table/column names, ERD) — **never raw data**
+
+Press `Ctrl+C` for graceful shutdown (sends offline notification).
 
 ### 3. Check status
 
@@ -79,10 +87,17 @@ epsilon-proxy status
 | Command | Description |
 |---------|-------------|
 | `register` | Register with the Epsilon platform and configure database |
-| `start` | Start the proxy server and tunnel |
+| `start` | Start the proxy server, tunnel, and heartbeat |
 | `dev` | Development mode (no tunnel, no attestation, no HMAC) |
 | `status` | Show current proxy configuration |
 | `unregister` | Remove proxy registration and local config |
+
+### Register flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--token` | *(required)* | Install token from the Epsilon platform |
+| `--api-url` | `https://app.epsilon-data.org/api/v1/hub` | Platform API URL (for self-hosted deployments) |
 
 ## Security model
 
@@ -98,6 +113,17 @@ epsilon-proxy implements six layers of security:
 | **Row limits** | 50,000 row maximum | Prevent bulk extraction |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full security design.
+
+## Heartbeat & Auto-Crawl
+
+When running, the proxy sends a heartbeat to the platform every 30 seconds. The heartbeat reports:
+- Database reachability status
+- Proxy version
+
+The platform may respond with an **action**:
+- `crawl` — the proxy should crawl the database schema and upload metadata
+
+This enables fully automated onboarding: create a PROXY project in the platform, register and start the proxy, and the schema is crawled automatically without any manual intervention. If a crawl fails, the platform can signal a re-crawl on the next heartbeat.
 
 ## Development
 
@@ -134,6 +160,26 @@ database:
 server:
   listen_addr: 127.0.0.1:8443
 ```
+
+## Versioning
+
+This project follows [Semantic Versioning](https://semver.org/). The version is embedded at build time via Go ldflags:
+
+```bash
+# Automatic (from git tags)
+make build
+
+# Manual override
+make build VERSION=0.2.0
+```
+
+The version is reported in:
+- `epsilon-proxy --version`
+- Registration request to the platform
+- Heartbeat payloads
+- `GET /health` endpoint
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Deployment guides
 
