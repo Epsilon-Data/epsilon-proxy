@@ -15,9 +15,16 @@ import (
 
 const configTemplate = `[client]
 remote_addr = "{{ .ServerAddr }}"
+heartbeat_timeout = 25
+retry_interval = 3
 {{ if .RemotePublicKey }}
 [client.transport]
 type = "noise"
+
+[client.transport.tcp]
+nodelay = true
+keepalive_secs = 15
+keepalive_interval = 5
 
 [client.transport.noise]
 remote_public_key = "{{ .RemotePublicKey }}"
