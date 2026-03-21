@@ -15,7 +15,7 @@ import (
 
 const configTemplate = `[client]
 remote_addr = "{{ .ServerAddr }}"
-heartbeat_timeout = 25
+heartbeat_timeout = 60
 retry_interval = 3
 {{ if .RemotePublicKey }}
 [client.transport]
@@ -63,6 +63,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	go m.runWithRestart(ctx, ratholeBin, configPath)
 
 	return nil
+}
+
+// Connected returns true if the rathole subprocess is currently running.
+func (m *Manager) Connected() bool {
+	return m.cmd != nil && m.cmd.Process != nil && m.cmd.ProcessState == nil
 }
 
 // Stop terminates the rathole subprocess.
