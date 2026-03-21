@@ -124,8 +124,12 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 
 		publicKeyToUse = result.PublicKey
+		log.Printf("[ATTESTATION] Verified: PCR0=%s... module=%s public_key_match=true",
+			fmt.Sprintf("%x", result.PCR0)[:16], result.ModuleID)
 	} else if s.cfg.DevMode {
 		log.Println("[DEV] Skipping attestation verification")
+	} else if req.AttestationDoc == "" {
+		log.Println("[WARN] No attestation document provided, skipping verification")
 	}
 
 	// 4. Validate query
