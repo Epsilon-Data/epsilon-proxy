@@ -99,24 +99,9 @@ epsilon-proxy status
 | `--token` | *(required)* | Install token from the Epsilon platform |
 | `--api-url` | `https://app.epsilon-data.org/api/v1/hub` | Platform API URL (for self-hosted deployments) |
 
-## Security model
-
-epsilon-proxy implements six layers of security:
-
-| Layer | Mechanism | Purpose |
-|-------|-----------|---------|
-| **Transport** | Noise protocol (X25519 + ChaCha20-Poly1305) | Encrypt tunnel traffic |
-| **Authentication** | HMAC-SHA256 with timestamp | Verify request origin, prevent replay |
-| **Attestation** | AWS Nitro (COSE_Sign1 + PCR0) | Verify enclave identity |
-| **Query validation** | SQL parser + blocklist | Prevent data exfiltration |
-| **Encryption** | RSA-2048-OAEP + AES-256-CBC | Encrypt results for enclave only |
-| **Row limits** | 50,000 row maximum | Prevent bulk extraction |
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full security design.
-
 ## Heartbeat & Auto-Crawl
 
-When running, the proxy sends a heartbeat to the platform every 30 seconds. The heartbeat reports:
+When running, the proxy sends a heartbeat to the platform every 60 seconds. The heartbeat reports:
 - Database reachability status
 - Proxy version
 
