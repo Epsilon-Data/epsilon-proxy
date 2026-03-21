@@ -6,5 +6,7 @@ dist/
 .env
 
 .idea/
+.claude/
 /proxy
+/epsilon-proxy
 scripts/test-vectors.json
