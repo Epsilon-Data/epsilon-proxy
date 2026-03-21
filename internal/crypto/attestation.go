@@ -47,10 +47,15 @@ func VerifyAttestation(attestationB64 string, expectedPCR0Hex string) (*Attestat
 		return nil, fmt.Errorf("base64 decode attestation: %w", err)
 	}
 
-	// 2. Parse COSE_Sign1
+	// 2. Parse COSE_Sign1 (AWS Nitro NSM returns untagged COSE_Sign1)
 	var msg cose.Sign1Message
 	if err := msg.UnmarshalCBOR(raw); err != nil {
-		return nil, fmt.Errorf("unmarshal COSE_Sign1: %w", err)
+		// Nitro attestation docs are untagged COSE_Sign1 (CBOR array, not tag 18).
+		// Wrap with CBOR tag 18 and retry.
+		tagged := append([]byte{0xd2}, raw...)
+		if err2 := msg.UnmarshalCBOR(tagged); err2 != nil {
+			return nil, fmt.Errorf("unmarshal COSE_Sign1: %w (also tried tagged: %v)", err, err2)
+		}
 	}
 
 	// 3. Parse attestation payload from COSE payload
@@ -152,7 +157,7 @@ BSuBBAAiA2IABPwCVOumCMHzaHDimtqQvkY4MpJzbolL//Zy2YlES1BR5TSksfbb
 48C8WBoyt7F2Bw7eEtaaP+ohG2bnUs990d0JX28TcPQXCEPZ3BABIeTPYwEoCWZE
 h8l5YoQwTcU/9KNCMEAwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUkCW1DdkF
 R+eWw5b6cp3PmanfS5YwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMDA2kAMGYC
-MQCjfy+Rocm9Xue4YnwWmNJVA44fA0YS5FXDS68CivhKLzKDEISTbrALnXjAQXMh
-qAIxAJaiSdy87FJ0k2LbcswPyyGSbCXLEhbkVIY7LI8a8UQnJksmB3GnZPKLyBai
-8X7YSw==
+MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW
+rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
+IwLz3/Y=
 -----END CERTIFICATE-----`
