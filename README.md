@@ -33,7 +33,7 @@ Your Network                              Epsilon Infrastructure
 ## Installation
 
 ```bash
-curl -fsSL https://get.epsilon-data.org/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Epsilon-Data/epsilon-proxy/main/scripts/install.sh | sh
 ```
 
 Or download from [GitHub Releases](https://github.com/Epsilon-Data/epsilon-proxy/releases).
