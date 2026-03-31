@@ -25,7 +25,7 @@ Your Network                              Epsilon Infrastructure
 **Key guarantees:**
 - Database credentials stored locally only — never sent to the platform
 - SQL queries validated (SELECT only, no system tables, no dangerous functions)
-- Results encrypted with the enclave's RSA public key before leaving your machine
+- Results encrypted with AES-256-CBC, key wrapped with the enclave's RSA-2048-OAEP public key — only the enclave can decrypt
 - Enclave identity verified via AWS Nitro attestation (COSE_Sign1 + PCR0)
 - Tunnel encrypted with Noise protocol (X25519 + ChaCha20-Poly1305)
 - Schema metadata crawled locally and uploaded to the platform (no raw data)
@@ -101,9 +101,10 @@ epsilon-proxy status
 
 ## Heartbeat & Auto-Crawl
 
-When running, the proxy sends a heartbeat to the platform every 60 seconds. The heartbeat reports:
+When running, the proxy sends a heartbeat to the platform every 30 seconds. The heartbeat reports:
 - Database reachability status
-- Proxy version
+- Tunnel connection status
+- Proxy version and uptime
 
 The platform may respond with an **action**:
 - `crawl` — the proxy should crawl the database schema and upload metadata
