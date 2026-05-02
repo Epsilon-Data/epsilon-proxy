@@ -41,6 +41,13 @@ type QueryMetadata struct {
 	EncryptedSizeBytes int   `json:"encrypted_size_bytes"`
 	QueryDurationMs    int64 `json:"query_duration_ms"`
 	EncryptDurationMs  int64 `json:"encryption_duration_ms"`
+
+	// Sub-stage timings for per-execution evaluation (Rule 2 decomposition).
+	ParseDurationMs             int64 `json:"parse_duration_ms"`
+	HMACVerifyDurationMs        int64 `json:"hmac_verify_duration_ms"`
+	AttestationVerifyDurationMs int64 `json:"attestation_verify_duration_ms"`
+	SQLValidateDurationMs       int64 `json:"sql_validate_duration_ms"`
+	TotalDurationMs             int64 `json:"total_duration_ms"`
 }
 
 type HealthResponse struct {
@@ -89,14 +96,19 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
+	handlerStart := time.Now()
+
 	// 1. Parse request
+	parseStart := time.Now()
 	var req QueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "Failed to parse request body")
 		return
 	}
+	parseDuration := time.Since(parseStart)
 
 	// 2. Verify HMAC signature (skip in dev mode)
+	hmacStart := time.Now()
 	if !s.cfg.DevMode {
 		signature := r.Header.Get("X-Signature")
 		if err := crypto.VerifySignature(s.cfg.ProxyToken, req.RequestID, req.SessionID, req.Timestamp, signature); err != nil {
@@ -106,8 +118,10 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Println("[DEV] Skipping HMAC verification")
 	}
+	hmacDuration := time.Since(hmacStart)
 
 	// 3. Verify attestation document (skip in dev mode)
+	attestStart := time.Now()
 	publicKeyToUse := req.EnclavePublicKey
 
 	if !s.cfg.DevMode && req.AttestationDoc != "" {
@@ -131,12 +145,15 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	} else if req.AttestationDoc == "" {
 		log.Println("[WARN] No attestation document provided, skipping verification")
 	}
+	attestDuration := time.Since(attestStart)
 
 	// 4. Validate query
+	sqlValidateStart := time.Now()
 	if err := db.ValidateQuery(req.SQLQuery); err != nil {
 		writeError(w, http.StatusBadRequest, "QUERY_BLOCKED", err.Error())
 		return
 	}
+	sqlValidateDuration := time.Since(sqlValidateStart)
 
 	// 5. Execute query
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.Database.QueryTimeoutS)*time.Second)
@@ -161,25 +178,34 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	encryptDuration := time.Since(encryptStart)
 
+	totalDuration := time.Since(handlerStart)
+
 	// 7. Return encrypted result
 	resp := QueryResponse{
 		Success:      true,
 		EncryptedCSV: encrypted,
 		Metadata: &QueryMetadata{
-			RowCount:           queryResult.RowCount,
-			ColumnCount:        queryResult.ColCount,
-			EncryptedSizeBytes: len(encrypted),
-			QueryDurationMs:    queryResult.Duration.Milliseconds(),
-			EncryptDurationMs:  encryptDuration.Milliseconds(),
+			RowCount:                    queryResult.RowCount,
+			ColumnCount:                 queryResult.ColCount,
+			EncryptedSizeBytes:          len(encrypted),
+			QueryDurationMs:             queryResult.Duration.Milliseconds(),
+			EncryptDurationMs:           encryptDuration.Milliseconds(),
+			ParseDurationMs:             parseDuration.Milliseconds(),
+			HMACVerifyDurationMs:        hmacDuration.Milliseconds(),
+			AttestationVerifyDurationMs: attestDuration.Milliseconds(),
+			SQLValidateDurationMs:       sqlValidateDuration.Milliseconds(),
+			TotalDurationMs:             totalDuration.Milliseconds(),
 		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 
-	log.Printf("[QUERY] request_id=%s rows=%d cols=%d query_ms=%d encrypt_ms=%d size=%d",
+	log.Printf("[QUERY] request_id=%s rows=%d cols=%d parse_ms=%d hmac_ms=%d attest_ms=%d sql_ms=%d query_ms=%d encrypt_ms=%d total_ms=%d size=%d",
 		req.RequestID, queryResult.RowCount, queryResult.ColCount,
-		queryResult.Duration.Milliseconds(), encryptDuration.Milliseconds(), len(encrypted))
+		parseDuration.Milliseconds(), hmacDuration.Milliseconds(), attestDuration.Milliseconds(),
+		sqlValidateDuration.Milliseconds(), queryResult.Duration.Milliseconds(),
+		encryptDuration.Milliseconds(), totalDuration.Milliseconds(), len(encrypted))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
