@@ -124,7 +124,11 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	attestStart := time.Now()
 	publicKeyToUse := req.EnclavePublicKey
 
-	if !s.cfg.DevMode && req.AttestationDoc != "" {
+	if !s.cfg.DevMode && req.AttestationDoc == "" {
+		log.Println("[ATTESTATION] Refused: no attestation document provided")
+		writeError(w, http.StatusForbidden, "ATTESTATION_REQUIRED", "An attestation document is required")
+		return
+	} else if !s.cfg.DevMode {
 		result, err := crypto.VerifyAttestation(req.AttestationDoc, s.cfg.Attestation.ExpectedPCR0)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "ATTESTATION_INVALID", err.Error())
@@ -140,10 +144,8 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		publicKeyToUse = result.PublicKey
 		log.Printf("[ATTESTATION] Verified: PCR0=%s... module=%s public_key_match=true",
 			fmt.Sprintf("%x", result.PCR0)[:16], result.ModuleID)
-	} else if s.cfg.DevMode {
+	} else {
 		log.Println("[DEV] Skipping attestation verification")
-	} else if req.AttestationDoc == "" {
-		log.Println("[WARN] No attestation document provided, skipping verification")
 	}
 	attestDuration := time.Since(attestStart)
 
