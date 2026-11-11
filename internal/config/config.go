@@ -50,6 +50,8 @@ type ServerConfig struct {
 
 type AttestationConfig struct {
 	ExpectedPCR0 string `yaml:"expected_pcr0"`
+	// MaxAgeS is how old an attestation document may be when it is presented, in seconds.
+	MaxAgeS int `yaml:"max_age_s"`
 }
 
 func DefaultPath() string {
@@ -106,6 +108,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Database.SSLMode == "" {
 		c.Database.SSLMode = "require"
+	}
+	if c.Attestation.MaxAgeS == 0 {
+		c.Attestation.MaxAgeS = 300
 	}
 }
 

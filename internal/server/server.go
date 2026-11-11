@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,6 +17,9 @@ import (
 type Server struct {
 	cfg      *config.Config
 	dbClient *db.Client
+
+	verifyAttestation func(attestationB64, expectedPCR0Hex string) (*crypto.AttestationResult, error)
+	freshness         *crypto.FreshnessGuard
 }
 
 type QueryRequest struct {
@@ -62,8 +66,10 @@ var startTime = time.Now()
 
 func New(cfg *config.Config) *Server {
 	return &Server{
-		cfg:      cfg,
-		dbClient: db.New(cfg.Database),
+		cfg:               cfg,
+		dbClient:          db.New(cfg.Database),
+		verifyAttestation: crypto.VerifyAttestation,
+		freshness:         crypto.NewFreshnessGuard(time.Duration(cfg.Attestation.MaxAgeS)*time.Second, time.Now),
 	}
 }
 
@@ -129,7 +135,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "ATTESTATION_REQUIRED", "An attestation document is required")
 		return
 	} else if !s.cfg.DevMode {
-		result, err := crypto.VerifyAttestation(req.AttestationDoc, s.cfg.Attestation.ExpectedPCR0)
+		result, err := s.verifyAttestation(req.AttestationDoc, s.cfg.Attestation.ExpectedPCR0)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "ATTESTATION_INVALID", err.Error())
 			return
@@ -138,6 +144,17 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		// Verify the public key in attestation matches the one in the request
 		if result.PublicKey != req.EnclavePublicKey {
 			writeError(w, http.StatusForbidden, "PCR_MISMATCH", "Public key in attestation does not match request")
+			return
+		}
+
+		// A document is accepted once, and only while its signed time is recent
+		if err := s.freshness.Accept(req.AttestationDoc, result.Timestamp); err != nil {
+			code := "ATTESTATION_STALE"
+			if errors.Is(err, crypto.ErrAttestationReplayed) {
+				code = "ATTESTATION_REPLAYED"
+			}
+			log.Printf("[ATTESTATION] Refused: %v", err)
+			writeError(w, http.StatusForbidden, code, err.Error())
 			return
 		}
 
