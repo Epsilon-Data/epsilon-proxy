@@ -62,6 +62,7 @@ curl -fsSL https://get.epsilon-data.org/install.sh | sh
 # Credentials are stored locally on this EC2 only.
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 
 # Start as systemd service
@@ -110,6 +111,7 @@ DB_TOKEN=$(aws rds generate-db-auth-token \
 EPSILON_DB_URL="postgres://iam_user:${DB_TOKEN}@mydb.xxxx.us-east-1.rds.amazonaws.com:5432/mydb?sslmode=require" \
   epsilon-proxy register \
     --token ept_your_token_here \
+    --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
     --api-url https://app.epsilon-data.org/api/v1/hub
 ```
 
@@ -131,6 +133,7 @@ RDS endpoint to the internet, which is against AWS security best practices.
 # From any machine — credentials entered interactively
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 ```
 

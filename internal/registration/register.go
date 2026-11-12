@@ -50,7 +50,9 @@ func New(apiURL, version string) *Registrar {
 	}
 }
 
-func (r *Registrar) Register(ctx context.Context, token string) error {
+// Register registers the proxy and saves its config. expectedPCR0 is the measurement of
+// the enclave image the proxy will release data to; the caller has validated it.
+func (r *Registrar) Register(ctx context.Context, token, expectedPCR0 string) error {
 	// 0. Stop any running proxy and clean old config
 	stopRunningProxy()
 	config.Remove()
@@ -153,6 +155,10 @@ func (r *Registrar) Register(ctx context.Context, token string) error {
 		Server: config.ServerConfig{
 			ListenAddr: "127.0.0.1:8443",
 		},
+		Attestation: config.AttestationConfig{
+			ExpectedPCR0: expectedPCR0,
+		},
+		ReleaseLogPath: config.DefaultReleaseLogPath(),
 	}
 
 	if err := config.Save(cfg); err != nil {
@@ -162,6 +168,8 @@ func (r *Registrar) Register(ctx context.Context, token string) error {
 	fmt.Println()
 	fmt.Printf("Proxy ID:     %s\n", cfg.ProxyID)
 	fmt.Printf("Config saved: %s\n", config.DefaultPath())
+	fmt.Printf("Expected PCR0: %s\n", cfg.Attestation.ExpectedPCR0)
+	fmt.Printf("Release log:  %s\n", cfg.ReleaseLogPath)
 	fmt.Println("Credentials stored LOCALLY ONLY — they never leave this machine.")
 	fmt.Println()
 	fmt.Println("Run 'epsilon-proxy start' to connect.")

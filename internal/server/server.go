@@ -12,6 +12,7 @@ import (
 	"github.com/Epsilon-Data/epsilon-proxy/internal/config"
 	"github.com/Epsilon-Data/epsilon-proxy/internal/crypto"
 	"github.com/Epsilon-Data/epsilon-proxy/internal/db"
+	"github.com/Epsilon-Data/epsilon-proxy/internal/releaselog"
 )
 
 type Server struct {
@@ -20,6 +21,9 @@ type Server struct {
 
 	verifyAttestation func(attestationB64, expectedPCR0Hex string) (*crypto.AttestationResult, error)
 	freshness         *crypto.FreshnessGuard
+	runQuery          func(ctx context.Context, sqlQuery string) (*db.QueryResult, error)
+	// releases is the custodian's log of data releases; nil only in dev mode without a path
+	releases *releaselog.Log
 }
 
 type QueryRequest struct {
@@ -65,12 +69,18 @@ type HealthResponse struct {
 var startTime = time.Now()
 
 func New(cfg *config.Config) *Server {
-	return &Server{
+	dbClient := db.New(cfg.Database)
+	s := &Server{
 		cfg:               cfg,
-		dbClient:          db.New(cfg.Database),
+		dbClient:          dbClient,
 		verifyAttestation: crypto.VerifyAttestation,
 		freshness:         crypto.NewFreshnessGuard(time.Duration(cfg.Attestation.MaxAgeS)*time.Second, time.Now),
+		runQuery:          dbClient.Query,
 	}
+	if cfg.ReleaseLogPath != "" {
+		s.releases = releaselog.New(cfg.ReleaseLogPath)
+	}
+	return s
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -129,12 +139,23 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// 3. Verify attestation document (skip in dev mode)
 	attestStart := time.Now()
 	publicKeyToUse := req.EnclavePublicKey
+	release := releaselog.Entry{RequestID: req.RequestID, SessionID: req.SessionID, SQLQuery: req.SQLQuery}
 
 	if !s.cfg.DevMode && req.AttestationDoc == "" {
 		log.Println("[ATTESTATION] Refused: no attestation document provided")
 		writeError(w, http.StatusForbidden, "ATTESTATION_REQUIRED", "An attestation document is required")
 		return
 	} else if !s.cfg.DevMode {
+		// Without an expected PCR0 any genuine enclave image would pass: serve nothing
+		if s.cfg.Attestation.ExpectedPCR0 == "" {
+			writeError(w, http.StatusServiceUnavailable, "EXPECTED_PCR0_NOT_CONFIGURED", crypto.ErrNoExpectedPCR0.Error())
+			return
+		}
+		if s.releases == nil {
+			writeError(w, http.StatusServiceUnavailable, "RELEASE_LOG_NOT_CONFIGURED", "No release log is configured")
+			return
+		}
+
 		result, err := s.verifyAttestation(req.AttestationDoc, s.cfg.Attestation.ExpectedPCR0)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "ATTESTATION_INVALID", err.Error())
@@ -159,6 +180,9 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 
 		publicKeyToUse = result.PublicKey
+		release.Attested = true
+		release.PCR0 = fmt.Sprintf("%x", result.PCR0)
+		release.ModuleID = result.ModuleID
 		log.Printf("[ATTESTATION] Verified: PCR0=%s... module=%s public_key_match=true",
 			fmt.Sprintf("%x", result.PCR0)[:16], result.ModuleID)
 	} else {
@@ -178,7 +202,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.Database.QueryTimeoutS)*time.Second)
 	defer cancel()
 
-	queryResult, err := s.dbClient.Query(ctx, req.SQLQuery)
+	queryResult, err := s.runQuery(ctx, req.SQLQuery)
 	if err != nil {
 		code := "QUERY_FAILED"
 		if ctx.Err() != nil {
@@ -197,9 +221,20 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	encryptDuration := time.Since(encryptStart)
 
+	// 7. Record the release in the custodian's log. Nothing is returned unless it is on disk
+	if s.releases != nil {
+		release.RowCount = queryResult.RowCount
+		release.ColumnCount = queryResult.ColCount
+		release.ExtractSHA256 = releaselog.ExtractDigest(queryResult.CSV)
+		if err := s.releases.Record(release); err != nil {
+			writeError(w, http.StatusInternalServerError, "RELEASE_LOG_FAILED", err.Error())
+			return
+		}
+	}
+
 	totalDuration := time.Since(handlerStart)
 
-	// 7. Return encrypted result
+	// 8. Return encrypted result
 	resp := QueryResponse{
 		Success:      true,
 		EncryptedCSV: encrypted,

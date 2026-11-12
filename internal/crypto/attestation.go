@@ -1,15 +1,20 @@
 package crypto
 
 import (
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/veraison/go-cose"
 )
+
+// ErrNoExpectedPCR0 is returned when no expected enclave image is configured.
+var ErrNoExpectedPCR0 = errors.New("no expected PCR0 is configured: no enclave image is accepted")
 
 // AttestationResult holds the verified attestation data.
 type AttestationResult struct {
@@ -41,6 +46,10 @@ type userData struct {
 // VerifyAttestation verifies an AWS Nitro Enclave attestation document.
 // It validates the certificate chain, COSE signature, PCR0, and extracts the public key.
 func VerifyAttestation(attestationB64 string, expectedPCR0Hex string) (*AttestationResult, error) {
+	if expectedPCR0Hex == "" {
+		return nil, ErrNoExpectedPCR0
+	}
+
 	// 1. Base64 decode
 	raw, err := base64.StdEncoding.DecodeString(attestationB64)
 	if err != nil {
@@ -110,21 +119,8 @@ func VerifyAttestation(attestationB64 string, expectedPCR0Hex string) (*Attestat
 		return nil, fmt.Errorf("PCR0 not found in attestation")
 	}
 
-	if expectedPCR0Hex != "" {
-		expectedPCR0, err := hex.DecodeString(expectedPCR0Hex)
-		if err != nil {
-			return nil, fmt.Errorf("decode expected PCR0: %w", err)
-		}
-
-		if len(pcr0) != len(expectedPCR0) {
-			return nil, fmt.Errorf("PCR0 length mismatch: got %d, expected %d", len(pcr0), len(expectedPCR0))
-		}
-
-		for i := range pcr0 {
-			if pcr0[i] != expectedPCR0[i] {
-				return nil, fmt.Errorf("PCR0 mismatch at byte %d: attestation does not match expected enclave image", i)
-			}
-		}
+	if err := matchPCR0(pcr0, expectedPCR0Hex); err != nil {
+		return nil, err
 	}
 
 	// 8. Extract public key from user_data
@@ -143,6 +139,25 @@ func VerifyAttestation(attestationB64 string, expectedPCR0Hex string) (*Attestat
 		ModuleID: payload.ModuleID,
 		Timestamp: payload.Timestamp,
 	}, nil
+}
+
+// matchPCR0 compares the attested PCR0 with the expected one. An empty expected
+// value matches nothing: without it any genuine enclave image would be accepted.
+func matchPCR0(pcr0 []byte, expectedPCR0Hex string) error {
+	if expectedPCR0Hex == "" {
+		return ErrNoExpectedPCR0
+	}
+	expectedPCR0, err := hex.DecodeString(expectedPCR0Hex)
+	if err != nil {
+		return fmt.Errorf("decode expected PCR0: %w", err)
+	}
+	if len(pcr0) != len(expectedPCR0) {
+		return fmt.Errorf("PCR0 length mismatch: got %d, expected %d", len(pcr0), len(expectedPCR0))
+	}
+	if subtle.ConstantTimeCompare(pcr0, expectedPCR0) != 1 {
+		return fmt.Errorf("PCR0 mismatch: attestation does not match expected enclave image")
+	}
+	return nil
 }
 
 // AWS Nitro Enclaves Root Certificate (Root G1)

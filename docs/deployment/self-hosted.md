@@ -22,6 +22,7 @@ curl -fsSL https://get.epsilon-data.org/install.sh | sh
 # Credentials are stored locally only — never sent to Epsilon.
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 
 # Start
@@ -40,6 +41,7 @@ Run epsilon-proxy on a different server that can reach your database over the LA
 # Register — enter your DB host (e.g., 192.168.1.50) when prompted
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 ```
 

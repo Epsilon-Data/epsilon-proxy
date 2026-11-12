@@ -47,6 +47,7 @@ curl -fsSL https://get.epsilon-data.org/install.sh | sh
 # Credentials are stored locally only.
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 
 epsilon-proxy start
@@ -79,6 +80,7 @@ curl -fsSL https://get.epsilon-data.org/install.sh | sh
 # Register — paste your Supabase direct connection string when prompted.
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 
 epsilon-proxy start

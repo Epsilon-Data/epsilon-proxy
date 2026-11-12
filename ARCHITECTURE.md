@@ -239,33 +239,38 @@ The proxy verifies the enclave's identity before trusting its public key:
 3. Extract certificate chain (cabundle + leaf cert)
 4. Verify chain against AWS Nitro Root G1 cert (embedded in binary)
 5. Verify COSE_Sign1 signature with leaf cert
-6. Extract PCR0 (48 bytes SHA-384) → compare against configured value
+6. Extract PCR0 (48 bytes SHA-384) → compare against `attestation.expected_pcr0`. With no expected value configured the proxy does not start and refuses every request
 7. Extract public_key from user_data → verify matches provided key
-8. All pass → encrypt with this key. Any fail → reject request.
+8. The document is accepted once, and only within `attestation.max_age_s` (300 s) of its signed time
+9. All pass → encrypt with this key. Any fail → reject request.
 
-### Layer 6: Payload Encryption (RSA-2048-OAEP + AES-256-CBC)
+### Layer 6: Payload Encryption (RSA-2048-OAEP + AES-256-GCM)
 
 ```
 Encrypt(plaintext, enclave_public_key):
   1. aes_key = random(32 bytes)              // AES-256
-  2. iv = random(16 bytes)                   // CBC IV
-  3. ciphertext = AES-256-CBC(plaintext, aes_key, iv, PKCS7)
+  2. nonce = random(12 bytes)                // GCM nonce, unique under the one-time key
+  3. ciphertext‖tag = AES-256-GCM(plaintext, aes_key, nonce)   // 16-byte authentication tag appended
   4. encrypted_key = RSA-OAEP(aes_key, enclave_public_key, SHA-256, MGF1-SHA256)
-  5. combined = encrypted_key (256 bytes) || iv (16 bytes) || ciphertext
+  5. combined = encrypted_key (256 bytes) || nonce (12 bytes) || ciphertext‖tag
   6. return base64(combined)
 ```
 
 Byte layout:
 ```
-Offset 0              256             272              N
+Offset 0              256             268              N
   ┌───────────────────┬────────────────┬────────────────┐
-  │ RSA-encrypted key │       IV       │   AES cipher   │
-  │    (256 bytes)    │   (16 bytes)   │   (variable)   │
+  │ RSA-encrypted key │     Nonce      │ AES cipher+tag │
+  │    (256 bytes)    │   (12 bytes)   │   (variable)   │
   └───────────────────┴────────────────┴────────────────┘
   └─────────────────── base64 encoded ──────────────────┘
 ```
 
-Only the enclave has the private key to decrypt. Cross-language compatible (Go encrypt ↔ Python decrypt verified).
+Only the enclave has the private key to decrypt, and a modified payload fails tag verification there. Cross-language compatible (Go encrypt ↔ Python decrypt verified).
+
+### Layer 7: Release Log
+
+Before the encrypted extract is returned, the proxy appends one JSON line to the custodian's release log (`release_log_path`, default `~/.epsilon-proxy/releases.log`) and syncs it to disk: time, request and session id, the full PCR0 and module id of the attested enclave, the query text, row and column counts, and the SHA-256 of the plaintext extract. If the line cannot be written, nothing is released. The enclave signs the same digest as `dataset_hash`, so the custodian can check what a run was given against their own file.
 
 ## Security Summary
 
@@ -278,7 +283,9 @@ Only the enclave has the private key to decrypt. Cross-language compatible (Go e
 | MITM protection | Proxy verifies Nitro attestation before trusting public key |
 | Replay protection | HMAC + timestamp window (300s) |
 | Tunnel encryption | Noise protocol (ChaCha20-Poly1305 + X25519) |
-| Payload encryption | RSA-2048-OAEP + AES-256-CBC (application layer) |
+| Payload encryption | RSA-2048-OAEP + AES-256-GCM, authenticated (application layer) |
+| Release only to the expected image | No start and no data without `expected_pcr0`; attestation accepted once, within 300 s |
+| Custodian's record | One synced log line per release with the extract's SHA-256, before data is returned |
 | Forward secrecy | Fresh RSA keypair per enclave session |
 | SQL injection blocked | Query validator rejects non-SELECT, system tables, dangerous functions |
 | DoS protection | 50k row limit, query timeout, read-only transactions |
@@ -323,7 +330,7 @@ Response (error):
 ```json
 {
   "success": false,
-  "error": "ATTESTATION_INVALID | PCR_MISMATCH | SIGNATURE_INVALID | QUERY_BLOCKED | DATABASE_UNREACHABLE | QUERY_FAILED | QUERY_TIMEOUT | ENCRYPTION_FAILED",
+  "error": "ATTESTATION_REQUIRED | ATTESTATION_INVALID | ATTESTATION_STALE | ATTESTATION_REPLAYED | EXPECTED_PCR0_NOT_CONFIGURED | PCR_MISMATCH | SIGNATURE_INVALID | QUERY_BLOCKED | DATABASE_UNREACHABLE | QUERY_FAILED | QUERY_TIMEOUT | ENCRYPTION_FAILED | RELEASE_LOG_FAILED | RELEASE_LOG_NOT_CONFIGURED",
   "message": "human readable"
 }
 ```
@@ -406,7 +413,7 @@ epsilon-proxy/
 ├── internal/
 │   ├── config/config.go           # YAML config management + runtime version
 │   ├── crypto/
-│   │   ├── hybrid.go              # RSA-OAEP + AES-256-CBC encryption
+│   │   ├── hybrid.go              # RSA-OAEP + AES-256-GCM encryption
 │   │   ├── hybrid_test.go         # Roundtrip + byte layout tests
 │   │   ├── attestation.go         # AWS Nitro attestation verification
 │   │   ├── hmac.go                # HMAC-SHA256 request signing

@@ -14,6 +14,7 @@ import (
 	"github.com/Epsilon-Data/epsilon-proxy/internal/db"
 	"github.com/Epsilon-Data/epsilon-proxy/internal/heartbeat"
 	"github.com/Epsilon-Data/epsilon-proxy/internal/registration"
+	"github.com/Epsilon-Data/epsilon-proxy/internal/releaselog"
 	"github.com/Epsilon-Data/epsilon-proxy/internal/server"
 	"github.com/Epsilon-Data/epsilon-proxy/internal/tunnel"
 )
@@ -41,6 +42,7 @@ func main() {
 func registerCmd() *cobra.Command {
 	var token string
 	var apiURL string
+	var expectedPCR0 string
 
 	cmd := &cobra.Command{
 		Use:   "register",
@@ -50,22 +52,30 @@ func registerCmd() *cobra.Command {
 Database credentials are entered interactively (never passed as CLI flags
 to avoid leaking them in shell history or process listings).
 
-Alternatively, set the EPSILON_DB_URL environment variable.`,
+Alternatively, set the EPSILON_DB_URL environment variable.
+
+--expected-pcr0 is the PCR0 of the enclave image this proxy will release data
+to. Take it from the published registry of the enclave release you reviewed
+(epsilon-enclave published/pcr-registry.json), not from the platform operator.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if token == "" {
 				return fmt.Errorf("--token is required")
+			}
+			if err := config.ValidatePCR0(expectedPCR0); err != nil {
+				return fmt.Errorf("--expected-pcr0: %w", err)
 			}
 			if apiURL == "" {
 				apiURL = "https://app.epsilon-data.org/api/v1/hub"
 			}
 
 			reg := registration.New(apiURL, Version)
-			return reg.Register(cmd.Context(), token)
+			return reg.Register(cmd.Context(), token, expectedPCR0)
 		},
 	}
 
 	cmd.Flags().StringVar(&token, "token", "", "Registration token from Epsilon platform")
 	cmd.Flags().StringVar(&apiURL, "api-url", "", "Epsilon platform API URL")
+	cmd.Flags().StringVar(&expectedPCR0, "expected-pcr0", "", "PCR0 of the enclave image to release data to (96 hex characters)")
 
 	return cmd
 }
@@ -93,6 +103,15 @@ func startCmd() *cobra.Command {
 				fmt.Println("Please re-register:")
 				fmt.Println("  epsilon-proxy register --token <YOUR_TOKEN>")
 				return fmt.Errorf("incomplete config")
+			}
+
+			if err := checkServable(cfg); err != nil {
+				fmt.Println("Proxy cannot start:", err)
+				fmt.Println()
+				fmt.Printf("Set attestation.expected_pcr0 in %s to the PCR0 of the enclave image\n", config.DefaultPath())
+				fmt.Println("you release data to (epsilon-enclave published/pcr-registry.json), or re-register:")
+				fmt.Println("  epsilon-proxy register --token <YOUR_TOKEN> --expected-pcr0 <PCR0>")
+				return err
 			}
 
 			cfg.Version = Version
@@ -123,6 +142,8 @@ func startCmd() *cobra.Command {
 			// Start HTTP server
 			srv := server.New(cfg)
 			fmt.Printf("Proxy running. Tunnel connected. Listening on %s\n", cfg.Server.ListenAddr)
+			fmt.Printf("Releasing data only to enclave image PCR0 %s\n", cfg.Attestation.ExpectedPCR0)
+			fmt.Printf("Release log: %s\n", cfg.ReleaseLogPath)
 
 			// Run server (blocks until context is cancelled)
 			serverErr := srv.Run(ctx)
@@ -140,6 +161,18 @@ func startCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config file (default: ~/.epsilon-proxy/config.yaml)")
 
 	return cmd
+}
+
+// checkServable refuses a config the proxy must not serve with: no expected enclave
+// image, or a release log that cannot be written.
+func checkServable(cfg *config.Config) error {
+	if err := config.ValidatePCR0(cfg.Attestation.ExpectedPCR0); err != nil {
+		return err
+	}
+	if cfg.ReleaseLogPath == "" {
+		return fmt.Errorf("release log path is not set")
+	}
+	return releaselog.New(cfg.ReleaseLogPath).Check()
 }
 
 func devCmd() *cobra.Command {
@@ -211,6 +244,8 @@ func statusCmd() *cobra.Command {
 			fmt.Printf("Platform:    %s\n", cfg.PlatformURL)
 			fmt.Printf("Listen:      %s\n", cfg.Server.ListenAddr)
 			fmt.Printf("DB Host:     %s\n", cfg.Database.Host())
+			fmt.Printf("Expected PCR0: %s\n", cfg.Attestation.ExpectedPCR0)
+			fmt.Printf("Release log: %s\n", cfg.ReleaseLogPath)
 			return nil
 		},
 	}

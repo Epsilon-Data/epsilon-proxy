@@ -25,8 +25,10 @@ Your Network                              Epsilon Infrastructure
 **Key guarantees:**
 - Database credentials stored locally only — never sent to the platform
 - SQL queries validated (SELECT only, no system tables, no dangerous functions)
-- Results encrypted with AES-256-CBC, key wrapped with the enclave's RSA-2048-OAEP public key — only the enclave can decrypt
-- Enclave identity verified via AWS Nitro attestation (COSE_Sign1 + PCR0)
+- Results encrypted and authenticated with AES-256-GCM, key wrapped with the enclave's RSA-2048-OAEP public key — only the enclave can decrypt
+- Enclave identity verified via AWS Nitro attestation (COSE_Sign1 + PCR0). The proxy releases data to one enclave image only: it does not start, and does not serve, without the expected PCR0
+- An attestation document is accepted once, and only within five minutes of its signed time
+- Every release is written to a log on your machine before the data is returned
 - Tunnel encrypted with Noise protocol (X25519 + ChaCha20-Poly1305)
 - Schema metadata crawled locally and uploaded to the platform (no raw data)
 
@@ -55,8 +57,10 @@ Requires Go 1.23+. The binary version is set automatically from the latest git t
 Get an install token from your Epsilon platform dashboard (Settings → Proxy), then:
 
 ```bash
-epsilon-proxy register --token ept_your_token_here
+epsilon-proxy register --token ept_your_token_here --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE>
 ```
+
+`--expected-pcr0` is the measurement (PCR0, 96 hex characters) of the enclave image you agree to release data to. Take it from the PCR registry published with the enclave release you reviewed ([`published/pcr-registry.json`](https://github.com/Epsilon-Data/epsilon-enclave/tree/main/published) in `epsilon-enclave`), not from the platform operator: it is your check on what code receives your data. The proxy refuses every request from any other image.
 
 The API URL defaults to `https://app.epsilon-data.org/api/v1/hub`. For self-hosted deployments, override with `--api-url`.
 
@@ -98,6 +102,7 @@ epsilon-proxy status
 |------|---------|-------------|
 | `--token` | *(required)* | Install token from the Epsilon platform |
 | `--api-url` | `https://app.epsilon-data.org/api/v1/hub` | Platform API URL (for self-hosted deployments) |
+| `--expected-pcr0` | *(required)* | PCR0 of the enclave image to release data to (96 hex characters) |
 
 ## Heartbeat & Auto-Crawl
 
@@ -145,7 +150,23 @@ database:
   query_timeout_s: 120
 server:
   listen_addr: 127.0.0.1:8443
+attestation:
+  expected_pcr0: 96-hex-character PCR0 of the enclave image
+  max_age_s: 300
+release_log_path: /home/you/.epsilon-proxy/releases.log
 ```
+
+`epsilon-proxy start` exits with an error when `attestation.expected_pcr0` is missing or is not a full PCR0, or when the release log cannot be written. When a new enclave version is released, review it and set `expected_pcr0` to its published PCR0, then restart the proxy.
+
+## Release log
+
+The proxy appends one JSON line to `release_log_path` for every extract it releases, and syncs it to disk before the encrypted data is returned. If the line cannot be written, nothing is released.
+
+```json
+{"time":"2026-11-12T09:30:00.123456Z","request_id":"req-7","session_id":"rsa-session-0a1b2c3d","attested":true,"pcr0":"<96 hex>","module_id":"i-0abc-enc0123","sql_query":"SELECT age, sex FROM patients","row_count":2,"column_count":2,"extract_sha256":"<64 hex>"}
+```
+
+`extract_sha256` is the SHA-256 of the plaintext CSV that was encrypted for the enclave. The enclave signs the same digest as `dataset_hash` in its record of the run, so you can check what any run was given against this file. The log is yours: `register` and `unregister` do not delete it.
 
 ## Versioning
 

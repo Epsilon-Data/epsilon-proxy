@@ -29,6 +29,7 @@ curl -fsSL https://get.epsilon-data.org/install.sh | sh
 # when prompted. Credentials stay on this VM.
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 
 epsilon-proxy start
@@ -49,6 +50,7 @@ cloud-sql-proxy --port 5432 my-project:us-central1:my-instance &
 # the Epsilon encryption.
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 
 epsilon-proxy start
@@ -65,6 +67,7 @@ Enable "Public IP" on Cloud SQL, add your proxy's IP to "Authorized Networks":
 # From any machine — credentials entered interactively
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 ```
 
@@ -99,6 +102,7 @@ curl -fsSL https://get.epsilon-data.org/install.sh | sh
 # when prompted. Credentials stay on this VM.
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 
 epsilon-proxy start
@@ -115,6 +119,7 @@ If "Allow public access" is enabled on the Flexible Server:
 # Then from any machine — credentials entered interactively:
 epsilon-proxy register \
   --token ept_your_token_here \
+  --expected-pcr0 <PCR0_OF_THE_ENCLAVE_IMAGE> \
   --api-url https://app.epsilon-data.org/api/v1/hub
 ```
 

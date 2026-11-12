@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -20,6 +21,8 @@ type Config struct {
 	Database    DatabaseConfig    `yaml:"database"`
 	Server      ServerConfig      `yaml:"server"`
 	Attestation AttestationConfig `yaml:"attestation"`
+	// ReleaseLogPath is the file that gets one line per data release.
+	ReleaseLogPath string `yaml:"release_log_path"`
 }
 
 type RatholeConfig struct {
@@ -48,10 +51,33 @@ type ServerConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
 }
 
+// PCR0HexLength is the length of a PCR0 value in hex: a SHA-384 digest.
+const PCR0HexLength = 96
+
 type AttestationConfig struct {
+	// ExpectedPCR0 is the measurement of the only enclave image this proxy releases data to.
 	ExpectedPCR0 string `yaml:"expected_pcr0"`
 	// MaxAgeS is how old an attestation document may be when it is presented, in seconds.
 	MaxAgeS int `yaml:"max_age_s"`
+}
+
+// ValidatePCR0 checks that value is a full PCR0 measurement (96 hex characters).
+func ValidatePCR0(value string) error {
+	if value == "" {
+		return fmt.Errorf("expected PCR0 is not set")
+	}
+	if len(value) != PCR0HexLength {
+		return fmt.Errorf("expected PCR0 must be %d hex characters, got %d", PCR0HexLength, len(value))
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return fmt.Errorf("expected PCR0 is not hex: %w", err)
+	}
+	return nil
+}
+
+func DefaultReleaseLogPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".epsilon-proxy", "releases.log")
 }
 
 func DefaultPath() string {
@@ -112,6 +138,9 @@ func (c *Config) setDefaults() {
 	if c.Attestation.MaxAgeS == 0 {
 		c.Attestation.MaxAgeS = 300
 	}
+	if c.ReleaseLogPath == "" {
+		c.ReleaseLogPath = DefaultReleaseLogPath()
+	}
 }
 
 func Save(cfg *Config) error {
@@ -134,8 +163,12 @@ func Save(cfg *Config) error {
 	return nil
 }
 
+// Remove deletes the local config and PID file. The release log is kept: it is the
+// custodian's record of what was released and outlives a registration.
 func Remove() error {
-	path := DefaultPath()
-	dir := filepath.Dir(path)
-	return os.RemoveAll(dir)
+	RemovePid()
+	if err := os.Remove(DefaultPath()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
