@@ -1,7 +1,6 @@
 package crypto
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -14,44 +13,50 @@ import (
 )
 
 const (
-	AESKeySize = 32 // 256 bits
-	IVSize     = 16 // 128 bits
-	AESBlock   = 16 // PKCS7 block size
+	AESKeySize   = 32 // 256 bits
+	GCMNonceSize = 12 // 96 bits, standard for AES-GCM
+	GCMTagSize   = 16 // 128-bit authentication tag (appended by gcm.Seal)
 )
 
-// Encrypt performs RSA-2048-OAEP + AES-256-CBC hybrid encryption.
-// Output format: base64(encrypted_aes_key || iv || ciphertext)
-// This MUST produce output compatible with the Python enclave's decryption.
+// Encrypt performs RSA-2048-OAEP + AES-256-GCM authenticated hybrid encryption.
+// Output format: base64(encrypted_aes_key || nonce || ciphertext‖tag)
+//
+// AES-GCM provides confidentiality AND integrity: the 16-byte authentication
+// tag that gcm.Seal appends to the ciphertext lets the enclave detect any
+// tampering (a modified payload fails tag verification on decrypt). A fresh
+// random AES-256 key is generated per message, so the random 12-byte nonce is
+// never reused under the same key.
+//
+// This MUST produce output the Python enclave's AES-GCM decryption can open.
 func Encrypt(plaintext []byte, publicKeyPEM string) (string, error) {
 	pubKey, err := ParsePublicKey(publicKeyPEM)
 	if err != nil {
 		return "", fmt.Errorf("parse public key: %w", err)
 	}
 
-	// Generate random AES-256 key
+	// Generate a fresh random AES-256 key for this message
 	aesKey := make([]byte, AESKeySize)
 	if _, err := rand.Read(aesKey); err != nil {
 		return "", fmt.Errorf("generate AES key: %w", err)
 	}
 
-	// Generate random IV
-	iv := make([]byte, IVSize)
-	if _, err := rand.Read(iv); err != nil {
-		return "", fmt.Errorf("generate IV: %w", err)
-	}
-
-	// PKCS7 pad the plaintext
-	padded := pkcs7Pad(plaintext, AESBlock)
-
-	// AES-256-CBC encrypt
 	block, err := aes.NewCipher(aesKey)
 	if err != nil {
 		return "", fmt.Errorf("create AES cipher: %w", err)
 	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("create GCM: %w", err)
+	}
 
-	ciphertext := make([]byte, len(padded))
-	mode := cipher.NewCBCEncrypter(block, iv)
-	mode.CryptBlocks(ciphertext, padded)
+	// Generate a fresh random 96-bit nonce (unique under this one-time key)
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("generate nonce: %w", err)
+	}
+
+	// Seal authenticates and encrypts; the 16-byte tag is appended to ciphertext
+	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
 
 	// RSA-OAEP encrypt the AES key (SHA-256 hash, SHA-256 MGF1)
 	encryptedKey, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, aesKey, nil)
@@ -59,10 +64,10 @@ func Encrypt(plaintext []byte, publicKeyPEM string) (string, error) {
 		return "", fmt.Errorf("RSA encrypt AES key: %w", err)
 	}
 
-	// Combine: encrypted_key || iv || ciphertext
-	combined := make([]byte, 0, len(encryptedKey)+len(iv)+len(ciphertext))
+	// Combine: encrypted_key || nonce || ciphertext‖tag
+	combined := make([]byte, 0, len(encryptedKey)+len(nonce)+len(ciphertext))
 	combined = append(combined, encryptedKey...)
-	combined = append(combined, iv...)
+	combined = append(combined, nonce...)
 	combined = append(combined, ciphertext...)
 
 	return base64.StdEncoding.EncodeToString(combined), nil
@@ -93,10 +98,4 @@ func ParsePublicKey(pemStr string) (*rsa.PublicKey, error) {
 	}
 
 	return rsaPub, nil
-}
-
-func pkcs7Pad(data []byte, blockSize int) []byte {
-	padding := blockSize - len(data)%blockSize
-	padText := bytes.Repeat([]byte{byte(padding)}, padding)
-	return append(data, padText...)
 }

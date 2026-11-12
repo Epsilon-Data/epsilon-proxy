@@ -148,8 +148,8 @@ func decryptHybrid(encryptedB64 string, privKey *rsa.PrivateKey) ([]byte, error)
 	}
 
 	encKey := combined[:keySize]
-	iv := combined[keySize : keySize+16]
-	ciphertext := combined[keySize+16:]
+	nonce := combined[keySize : keySize+12]
+	ciphertext := combined[keySize+12:] // includes 16-byte GCM tag
 
 	// RSA-OAEP decrypt
 	aesKey, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, encKey, nil)
@@ -157,22 +157,21 @@ func decryptHybrid(encryptedB64 string, privKey *rsa.PrivateKey) ([]byte, error)
 		return nil, fmt.Errorf("RSA: %w", err)
 	}
 
-	// AES-256-CBC decrypt
+	// AES-256-GCM decrypt + tag verification
 	block, err := aes.NewCipher(aesKey)
 	if err != nil {
 		return nil, fmt.Errorf("AES: %w", err)
 	}
-
-	padded := make([]byte, len(ciphertext))
-	cipher.NewCBCDecrypter(block, iv).CryptBlocks(padded, ciphertext)
-
-	// Remove PKCS7 padding
-	padLen := int(padded[len(padded)-1])
-	if padLen > 16 || padLen == 0 {
-		return nil, fmt.Errorf("invalid padding: %d", padLen)
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("GCM: %w", err)
+	}
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("GCM open (tag verification): %w", err)
 	}
 
-	return padded[:len(padded)-padLen], nil
+	return plaintext, nil
 }
 
 func fatal(format string, args ...any) {

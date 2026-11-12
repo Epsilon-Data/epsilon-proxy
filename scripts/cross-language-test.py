@@ -16,18 +16,17 @@ import os
 import sys
 
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
-from cryptography.hazmat.primitives import hashes, padding as sym_padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 
 AES_KEY_SIZE = 32
-IV_SIZE = 16
-AES_BLOCK_SIZE = 128  # bits
+GCM_NONCE_SIZE = 12
 
 
 def decrypt_hybrid(encrypted_b64: str, private_key_pem: bytes) -> bytes:
-    """Decrypt RSA-OAEP + AES-256-CBC hybrid encrypted data.
+    """Decrypt RSA-OAEP + AES-256-GCM hybrid encrypted data.
 
     This mirrors the enclave's DecryptServiceImpl.decrypt_combined_hybrid_data()
     """
@@ -37,8 +36,8 @@ def decrypt_hybrid(encrypted_b64: str, private_key_pem: bytes) -> bytes:
     combined = base64.b64decode(encrypted_b64)
 
     encrypted_key = combined[:rsa_key_bytes]
-    iv = combined[rsa_key_bytes:rsa_key_bytes + IV_SIZE]
-    ciphertext = combined[rsa_key_bytes + IV_SIZE:]
+    nonce = combined[rsa_key_bytes:rsa_key_bytes + GCM_NONCE_SIZE]
+    ciphertext = combined[rsa_key_bytes + GCM_NONCE_SIZE:]  # includes the 16-byte tag
 
     # RSA-OAEP decrypt (SHA-256 hash, SHA-256 MGF1)
     aes_key = private_key.decrypt(
@@ -50,16 +49,8 @@ def decrypt_hybrid(encrypted_b64: str, private_key_pem: bytes) -> bytes:
         )
     )
 
-    # AES-256-CBC decrypt
-    cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv))
-    decryptor = cipher.decryptor()
-    padded = decryptor.update(ciphertext) + decryptor.finalize()
-
-    # Remove PKCS7 padding
-    unpadder = sym_padding.PKCS7(AES_BLOCK_SIZE).unpadder()
-    plaintext = unpadder.update(padded) + unpadder.finalize()
-
-    return plaintext
+    # AES-256-GCM decrypt; raises InvalidTag when the payload was modified
+    return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
 
 
 def main():

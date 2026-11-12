@@ -29,5 +29,5 @@ epsilon-proxy is designed with a zero-trust architecture. See [ARCHITECTURE.md](
 - Request authentication (HMAC-SHA256)
 - Enclave attestation (AWS Nitro)
 - SQL query validation
-- Hybrid encryption (RSA-OAEP + AES-256-CBC)
+- Hybrid encryption (RSA-OAEP + AES-256-GCM, authenticated)
 - Row limits
