@@ -95,6 +95,7 @@ Data Owner                Platform API                Proxy (heartbeat loop)
 
 3. epsilon-proxy register
    --token <token>
+   --expected-pcr0 <pcr0>
         ─────────────→  4. Validate token
                             Assign port
                             Generate keys
@@ -359,7 +360,7 @@ Response (error):
 ## Registration Flow
 
 ```
-$ epsilon-proxy register --token ept_a1b2c3d4
+$ epsilon-proxy register --token ept_a1b2c3d4 --expected-pcr0 <pcr0>
 
 Database credentials (stored locally only, never sent to Epsilon)
 ─────────────────────────────────────────────────────────────────
